@@ -28,29 +28,72 @@ export default function Home() {
 
     const userMsg = input.trim();
     setInput("");
-    setMessages((prev) => [...prev, { role: "user", content: userMsg }]);
+    
+    // Add user message, and a placeholder for the assistant's streaming response
+    setMessages((prev) => [
+      ...prev, 
+      { role: "user", content: userMsg },
+      { role: "assistant", content: "", context: "" }
+    ]);
     setIsLoading(true);
 
     try {
-      const res = await fetch("http://localhost:8000/chat", {
+      const res = await fetch("http://localhost:8000/chat/stream", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ question: userMsg }),
+        // Added session_id for conversational memory
+        body: JSON.stringify({ question: userMsg, session_id: "default_session" }),
       });
 
       if (!res.ok) throw new Error("API responded with an error");
 
-      const data = await res.json();
-      setMessages((prev) => [
-        ...prev,
-        { role: "assistant", content: data.answer, context: data.context_used },
-      ]);
+      // Once the stream starts, we are no longer "loading"
+      setIsLoading(false);
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder("utf-8");
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        
+        const chunk = decoder.decode(value, { stream: true });
+        const lines = chunk.split("\n\n");
+        
+        for (const line of lines) {
+          if (line.startsWith("data: ")) {
+            try {
+              const data = JSON.parse(line.slice(6));
+              
+              if (data.context_used) {
+                setMessages((prev) => {
+                  const newMsgs = [...prev];
+                  const lastIdx = newMsgs.length - 1;
+                  newMsgs[lastIdx] = { ...newMsgs[lastIdx], context: data.context_used };
+                  return newMsgs;
+                });
+              }
+              
+              if (data.token) {
+                setMessages((prev) => {
+                  const newMsgs = [...prev];
+                  const lastIdx = newMsgs.length - 1;
+                  newMsgs[lastIdx] = { ...newMsgs[lastIdx], content: newMsgs[lastIdx].content + data.token };
+                  return newMsgs;
+                });
+              }
+            } catch (e) {
+              console.error("Error parsing JSON chunk:", e);
+            }
+          }
+        }
+      }
     } catch (err) {
-      setMessages((prev) => [
-        ...prev,
-        { role: "assistant", content: "Sorry, I encountered an error connecting to the backend." },
-      ]);
-    } finally {
+      setMessages((prev) => {
+        const newMsgs = [...prev];
+        newMsgs[newMsgs.length - 1].content = "Sorry, I encountered an error connecting to the backend.";
+        return newMsgs;
+      });
       setIsLoading(false);
     }
   };
