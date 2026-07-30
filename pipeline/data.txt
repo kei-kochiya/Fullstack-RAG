@@ -1,0 +1,3 @@
+The Eiffel Tower is located in Paris, France.
+Mars is the fourth planet from the Sun and is often called the Red Planet.
+Python is a high-level, general-purpose programming language.

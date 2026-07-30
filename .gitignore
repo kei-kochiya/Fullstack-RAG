@@ -1,0 +1,19 @@
+# Environments
+.venv/
+__pycache__/
+.env
+
+# Node
+node_modules/
+frontend/.next/
+frontend/out/
+frontend/build/
+
+# Infrastructure Data
+infra/qdrant_data/
+infra/minio_data/
+infra/ollama_data/
+
+# OS Files
+.DS_Store
+Thumbs.db
