@@ -1,19 +1,39 @@
-# Environments
+# Environments & Python
 .venv/
 __pycache__/
-.env
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+*.log
 
-# Node
+# Environment Variables
+.env
+.env.local
+.env.*.local
+
+# Node & Next.js
 node_modules/
 frontend/.next/
 frontend/out/
 frontend/build/
 
-# Infrastructure Data
+# Infrastructure Persistent Storage
+infra/postgres_data/
 infra/qdrant_data/
+infra/qdrant_storage/
 infra/minio_data/
 infra/ollama_data/
+infra/redis_data/
 
-# OS Files
+# Large Datasets
+large_data.txt
+
+# OS & Editor
 .DS_Store
 Thumbs.db
+.vscode/
+.idea/

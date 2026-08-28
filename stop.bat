@@ -1,9 +1,9 @@
 @echo off
-echo Stopping RAG Infrastructure (Docker)...
+echo Stopping Infrastructure Containers...
 cd infra
 docker compose down
 cd ..
-echo.
-echo Infrastructure stopped!
-echo Note: Please close the Frontend and Backend command windows manually.
+
+echo Infrastructure stopped.
+echo Note: Close the backend and frontend command windows to stop local dev servers.
 pause

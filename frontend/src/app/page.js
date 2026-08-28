@@ -1,99 +1,157 @@
 "use client";
 
-import { useState, useRef, useEffect } from "react";
-import { Send, Bot, User, Loader2, Database } from "lucide-react";
+import { useState, useRef, useEffect, useCallback } from "react";
+import Link from "next/link";
+import { Send, Bot, User, Loader2, Database, LayoutDashboard, RefreshCw } from "lucide-react";
+import { API_BASE } from "../lib/api";
+
+function generateSessionId() {
+  return `sess_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+}
 
 export default function Home() {
+  const [sessionId, setSessionId] = useState("");
   const [messages, setMessages] = useState([
     {
+      id: "initial",
       role: "assistant",
-      content: "Hello! I am your AI assistant powered by Gemma and Qdrant. What would you like to know?",
+      content: "Hello! Ask me any questions regarding the indexed knowledge base.",
     },
   ]);
   const [input, setInput] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const messagesEndRef = useRef(null);
 
-  const scrollToBottom = () => {
+  useEffect(() => {
+    let saved = localStorage.getItem("rag_session_id");
+    if (!saved) {
+      saved = generateSessionId();
+      localStorage.setItem("rag_session_id", saved);
+    }
+    setSessionId(saved);
+  }, []);
+
+  const scrollToBottom = useCallback(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  };
+  }, []);
 
   useEffect(() => {
     scrollToBottom();
-  }, [messages, isLoading]);
+  }, [messages, isLoading, scrollToBottom]);
+
+  const handleResetSession = () => {
+    const newId = generateSessionId();
+    localStorage.setItem("rag_session_id", newId);
+    setSessionId(newId);
+    setMessages([
+      {
+        id: "initial",
+        role: "assistant",
+        content: "New conversation started. How can I help you?",
+      },
+    ]);
+  };
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    if (!input.trim() || isLoading) return;
+    const query = input.trim();
+    if (!query || isLoading) return;
 
-    const userMsg = input.trim();
+    const userMsgId = `user_${Date.now()}`;
+    const assistantMsgId = `ai_${Date.now()}`;
+
     setInput("");
-    
-    // Add user message, and a placeholder for the assistant's streaming response
     setMessages((prev) => [
-      ...prev, 
-      { role: "user", content: userMsg },
-      { role: "assistant", content: "", context: "" }
+      ...prev,
+      { id: userMsgId, role: "user", content: query },
+      { id: assistantMsgId, role: "assistant", content: "", context: "" },
     ]);
     setIsLoading(true);
 
     try {
-      const res = await fetch("http://localhost:8000/chat/stream", {
+      const res = await fetch(`${API_BASE}/chat/stream`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        // Added session_id for conversational memory
-        body: JSON.stringify({ question: userMsg, session_id: "default_session" }),
+        body: JSON.stringify({
+          question: query,
+          session_id: sessionId || "default_session",
+        }),
       });
 
-      if (!res.ok) throw new Error("API responded with an error");
+      if (!res.ok) {
+        throw new Error(`Server returned HTTP ${res.status}`);
+      }
 
-      // Once the stream starts, we are no longer "loading"
       setIsLoading(false);
 
-      const reader = res.body.getReader();
+      const reader = res.body?.getReader();
+      if (!reader) {
+        throw new Error("Streaming response body is unavailable");
+      }
+
       const decoder = new TextDecoder("utf-8");
+      let streamBuffer = "";
 
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
-        
-        const chunk = decoder.decode(value, { stream: true });
-        const lines = chunk.split("\n\n");
-        
-        for (const line of lines) {
-          if (line.startsWith("data: ")) {
-            try {
-              const data = JSON.parse(line.slice(6));
-              
-              if (data.context_used) {
-                setMessages((prev) => {
-                  const newMsgs = [...prev];
-                  const lastIdx = newMsgs.length - 1;
-                  newMsgs[lastIdx] = { ...newMsgs[lastIdx], context: data.context_used };
-                  return newMsgs;
-                });
-              }
-              
-              if (data.token) {
-                setMessages((prev) => {
-                  const newMsgs = [...prev];
-                  const lastIdx = newMsgs.length - 1;
-                  newMsgs[lastIdx] = { ...newMsgs[lastIdx], content: newMsgs[lastIdx].content + data.token };
-                  return newMsgs;
-                });
-              }
-            } catch (e) {
-              console.error("Error parsing JSON chunk:", e);
+
+        streamBuffer += decoder.decode(value, { stream: true });
+        const events = streamBuffer.split("\n\n");
+        streamBuffer = events.pop() || "";
+
+        for (const event of events) {
+          const trimmed = event.trim();
+          if (!trimmed.startsWith("data:")) continue;
+
+          const jsonPayload = trimmed.replace(/^data:\s*/, "");
+          if (!jsonPayload) continue;
+
+          try {
+            const data = JSON.parse(jsonPayload);
+
+            if (data.context_used !== undefined) {
+              setMessages((prev) =>
+                prev.map((msg) =>
+                  msg.id === assistantMsgId
+                    ? { ...msg, context: data.context_used }
+                    : msg
+                )
+              );
             }
+
+            if (data.token) {
+              setMessages((prev) =>
+                prev.map((msg) =>
+                  msg.id === assistantMsgId
+                    ? { ...msg, content: msg.content + data.token }
+                    : msg
+                )
+              );
+            }
+
+            if (data.error) {
+              setMessages((prev) =>
+                prev.map((msg) =>
+                  msg.id === assistantMsgId
+                    ? { ...msg, content: `${msg.content}\n[Error: ${data.error}]` }
+                    : msg
+                )
+              );
+            }
+          } catch (parseErr) {
+            console.error("Malformed SSE packet:", parseErr);
           }
         }
       }
     } catch (err) {
-      setMessages((prev) => {
-        const newMsgs = [...prev];
-        newMsgs[newMsgs.length - 1].content = "Sorry, I encountered an error connecting to the backend.";
-        return newMsgs;
-      });
+      setMessages((prev) =>
+        prev.map((msg) =>
+          msg.id === assistantMsgId
+            ? { ...msg, content: "Unable to complete request. Please ensure the backend is running." }
+            : msg
+        )
+      );
       setIsLoading(false);
     }
   };
@@ -104,26 +162,68 @@ export default function Home() {
         <Bot className="header-icon" />
         <div>
           <h1>RAG Knowledge Assistant</h1>
-          <p>Powered by Qdrant & Gemma</p>
+          <p>Local Inference & Hybrid Vector Retrieval</p>
+        </div>
+        <div style={{ marginLeft: "auto", display: "flex", gap: "10px", alignItems: "center" }}>
+          <button
+            onClick={handleResetSession}
+            title="Reset Conversation"
+            style={{
+              background: "rgba(255,255,255,0.05)",
+              border: "1px solid rgba(255,255,255,0.08)",
+              color: "white",
+              padding: "8px 12px",
+              borderRadius: "8px",
+              cursor: "pointer",
+              display: "flex",
+              alignItems: "center",
+              gap: "6px",
+              fontSize: "0.85rem",
+            }}
+          >
+            <RefreshCw size={15} /> New Chat
+          </button>
+          <Link
+            href="/dashboard"
+            style={{
+              background: "rgba(255,255,255,0.05)",
+              border: "1px solid rgba(255,255,255,0.08)",
+              color: "white",
+              padding: "8px 16px",
+              borderRadius: "8px",
+              textDecoration: "none",
+              display: "flex",
+              alignItems: "center",
+              gap: "8px",
+              fontSize: "0.9rem",
+            }}
+          >
+            <LayoutDashboard size={18} /> Analytics
+          </Link>
         </div>
       </div>
 
       <div className="messages-area">
-        {messages.map((msg, idx) => (
-          <div key={idx} className={`message-wrapper ${msg.role === "user" ? "user-wrapper" : "assistant-wrapper"}`}>
+        {messages.map((msg) => (
+          <div
+            key={msg.id}
+            className={`message-wrapper ${
+              msg.role === "user" ? "user-wrapper" : "assistant-wrapper"
+            }`}
+          >
             <div className={`message-avatar ${msg.role}`}>
               {msg.role === "user" ? <User size={18} /> : <Bot size={18} />}
             </div>
             <div className={`message-bubble ${msg.role}`}>
               <div className="message-content">{msg.content}</div>
-              {msg.context && (
+              {msg.context ? (
                 <div className="message-context">
                   <div className="context-title">
                     <Database size={14} /> Retrieved Context:
                   </div>
                   <pre>{msg.context}</pre>
                 </div>
-              )}
+              ) : null}
             </div>
           </div>
         ))}
@@ -134,7 +234,7 @@ export default function Home() {
             </div>
             <div className="message-bubble assistant loading">
               <Loader2 className="spinner" size={20} />
-              <span>Thinking...</span>
+              <span>Generating response...</span>
             </div>
           </div>
         )}
@@ -146,7 +246,7 @@ export default function Home() {
           type="text"
           value={input}
           onChange={(e) => setInput(e.target.value)}
-          placeholder="Ask a question..."
+          placeholder="Ask a question about your indexed documents..."
           disabled={isLoading}
         />
         <button type="submit" disabled={!input.trim() || isLoading}>
